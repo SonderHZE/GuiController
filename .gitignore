@@ -1,0 +1,10 @@
+# Python编译文件
+__pycache__/
+*.py[cod]
+
+# IDE配置目录
+.idea/
+data/
+labeled_image
+screenshot.png
+config.py
