@@ -9,17 +9,17 @@ from datetime import datetime
 from jsonschema import validate
 from PyQt5.QtWidgets import QApplication
 import os
+import pyautogui
 
-from requests import utils
 import config
 
 JSON_SCHEMA = {
     "type": "object",
     "properties": {
-        "action": {"type": "string"},
         "id": {"type": "integer"},
+        "action": {"type": "string"},
         "target": {"type": "string"},
-        "params": {
+        "value": {
             "type": "object",
             "properties": {
                 "button_type": {"type": "string"},
@@ -34,16 +34,27 @@ JSON_SCHEMA = {
 
 JSON_PATTERN = re.compile(r'```json(.*?)```', re.DOTALL)
 def log_operation(action_type: str, target: str, params: dict, duration: float, status: str):
-    """记录操作日志"""
+    """记录操作日志（新增坐标记录）"""
+    # 从参数中提取坐标信息
+    coord = {
+        'x': params.get('x'),
+        'y': params.get('y'),
+        'screen_width': pyautogui.size()[0],
+        'screen_height': pyautogui.size()[1]
+    } if 'x' in params or 'y' in params else None
+    
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "action": action_type,
         "target": target,
         "params": params,
+        "coord": coord,  # 新增坐标信息
         "duration": round(duration, 2),
         "status": status
     }
-    logging.info(json.dumps(log_entry, indent=2, ensure_ascii=False))
+    
+    with open(config.LOG_FILE, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
 
 def load_action_history(file_path) -> list:
     """加载历史操作数据"""
@@ -97,23 +108,23 @@ def load_instruction_history(file_path) -> list:
     
     return history
 
-
 def update_status(input_box, message: str):
     """更新状态提示"""
     input_box.setPlaceholderText(message)
     QApplication.processEvents()
 
-def take_screenshot(controller):
+def take_screenshot(controller, image_path = config.SCREENSHOT_PATH):
     """截图操作"""
     start_time = time.time()
     img = controller.screen_shot()
-    img.save(config.SCREENSHOT_PATH)
+    img.save(image_path)
     duration = time.time() - start_time
     return duration
 
 def process_image():
     """图像处理"""
-    import client
+    from core.api.client import APIClient
+    client = APIClient()
     start_time = time.time()
     result = client.process_image(
         image_path=config.SCREENSHOT_PATH,
@@ -154,12 +165,12 @@ def parse_data(result):
             count += 1
 
     duration = time.time() - start_time
-    print(f"解析结果: {ret}")
     return ret, duration
 
 def parse_instruction(instruction, pre_actions, current_icons, type = "text"):
     """指令解析"""
-    import model_parser
+    from core.model_parser import ModelParser
+    model_parser = ModelParser()
     start_time = time.time()
     if type == "text":
         action = model_parser.parse_instruction(
@@ -173,7 +184,6 @@ def parse_instruction(instruction, pre_actions, current_icons, type = "text"):
         )
     duration = time.time() - start_time
 
-    print(f"解析结果: {action}")
     return action, duration
 
 def robust_json_extract(text: str):
@@ -192,8 +202,7 @@ def robust_json_extract(text: str):
 
 def execute_action(controller, action_data, objs):
     """执行动作"""
-    import client
-
+    from core.api import client
     # 确保action_data为字典
     if isinstance(action_data, list):
         action_data = action_data[0]
@@ -221,8 +230,8 @@ def execute_action(controller, action_data, objs):
     start_time = time.time()
     try:
         actions = {
-            'click': lambda: controller.click(x, y, params.get('button_type', 'left')),
-            'double_click': lambda: controller.double_click(x, y),
+            'click': lambda: controller.click(x, y, params.get('button_type', 'left'), params.get('clicks', 1)),
+            'open': lambda: controller.open(x, y),
             'input': lambda: controller.input(params['text_content'], x, y),
             'scroll': lambda: controller.scroll(params['direction']),
             'hot_key': lambda: controller.hot_key(params['key_sequence']),
@@ -243,3 +252,70 @@ def execute_action(controller, action_data, objs):
         duration = time.time() - start_time
         return action_type, target_icon, params, duration, f"failed: {str(e)}"
    
+def compare_image_similarity(image1_path, image2_path):
+    """比较图像相似度
+    返回包含SSIM、PSNR和MSE的字典，值范围：
+    - SSIM: [-1, 1]（1表示完全相同）
+    - PSNR: [0, ∞]（值越大越好，通常>30可认为相似）
+    - MSE: [0, ∞]（0表示完全相同）
+    """
+    from PIL import Image
+    from skimage.metrics import structural_similarity as ssim
+    from skimage.metrics import peak_signal_noise_ratio as psnr
+    from skimage.metrics import mean_squared_error
+    import numpy as np
+    
+    try:
+        # 加载并转换图像为灰度图
+        img1 = Image.open(image1_path).convert('L')
+        img2 = Image.open(image2_path).convert('L')
+        
+        # 统一图像尺寸
+        if img1.size != img2.size:
+            min_size = (min(img1.width, img2.width), min(img1.height, img2.height))
+            img1 = img1.resize(min_size)
+            img2 = img2.resize(min_size)
+            
+        img1_arr = np.array(img1)
+        img2_arr = np.array(img2)
+        
+        # 计算指标
+        ssim_score = ssim(img1_arr, img2_arr, full=True)[0]
+        mse_score = mean_squared_error(img1_arr, img2_arr)
+        psnr_score = psnr(img1_arr, img2_arr)
+        
+
+        print(f"SSIM: {ssim_score}")
+        print(f"PSNR: {psnr_score}")
+        print(f"MSE: {mse_score}")
+        return {
+            "ssim": round(ssim_score, 4),
+            "psnr": round(psnr_score, 2),
+            "mse": int(mse_score)
+        }
+        
+    except Exception as e:
+        logging.error(f"图像相似度比较失败: {str(e)}")
+        return {
+            "ssim": 0.0,
+            "psnr": 0.0,
+            "mse": 999999
+        }
+
+def get_all_windows_titles():
+    """获取所有窗口标题"""
+    import win32gui
+    def _enum_windows(hwnd, result):
+        result.append(win32gui.GetWindowText(hwnd))
+    windows = []
+    win32gui.EnumWindows(_enum_windows, windows)
+    return windows
+
+def maximize_window(title, controller):
+    """最大化指定窗口"""
+    try:
+        hwnd = controller.find_window_by_title(title)
+        controller.set_foreground_window(hwnd)
+        controller.maximize_window()
+    except Exception as e:
+        logging.error(f"最大化窗口失败: {str(e)}")
