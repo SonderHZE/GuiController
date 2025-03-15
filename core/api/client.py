@@ -1,12 +1,16 @@
 import base64
 import io
-from typing import NamedTuple, Dict, Any, Optional
+from typing import Any, Dict, NamedTuple, Optional
 
+from PIL import Image
+from numpy import result_type
 import pyautogui
 import requests
-from PIL import Image
-
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent))
 import config
+import cv2
 
 
 class ProcessResult(NamedTuple):
@@ -105,6 +109,42 @@ class APIClient:
                 message=f"响应数据解析失败: {str(e)}"
             )
 
+    def smart_locate(self, template_image, threshold=0.8):
+        """
+        基于OpenCV的智能元素定位
+        :param template_image: 要查找的元素截图路径
+        :param threshold: 匹配阈值
+        :return: (x, y) 中心坐标
+        """
+        screenshot = pyautogui.screenshot()
+        # 将截图转换为OpenCV格式
+        import numpy as np  # 添加对numpy库的导入
+        screenshot_cv = cv2.cvtColor(np.array(screenshot).astype('uint8'), cv2.COLOR_RGB2BGR)
+
+        # 处理模板图像
+        if isinstance(template_image, str):
+            template_image_cv = cv2.imread(template_image, cv2.IMREAD_COLOR)
+            if template_image_cv is None:
+                raise FileNotFoundError(f"模板图像未找到: {template_image}")
+        elif isinstance(template_image, Image.Image):
+            template_image_cv = cv2.cvtColor(np.array(template_image).astype('uint8'), cv2.COLOR_RGB2BGR)
+        elif isinstance(template_image, np.ndarray):
+            template_image_cv = template_image
+        else:
+            raise ValueError(f"不支持的模板图像类型: {type(template_image)}")
+
+        # 添加尺寸校验
+        if screenshot_cv.shape[0] < template_image_cv.shape[0] or screenshot_cv.shape[1] < template_image_cv.shape[1]:
+            raise ValueError("模板图像尺寸大于屏幕截图")
+
+        # 使用更鲁棒的模板匹配方法
+        result = cv2.matchTemplate(screenshot_cv, template_image_cv, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        print(f"匹配结果: {result}")
+        if max_val > threshold:
+            h, w = template_image_cv.shape[:2]
+            return (max_loc[0] + w//2, max_loc[1] + h//2)
+        return None
 
 def bbox_to_coords(bbox: tuple) -> tuple[float, float]:
     """将 bbox 坐标转换为屏幕坐标"""
@@ -130,7 +170,6 @@ def bbox_to_coords(bbox: tuple) -> tuple[float, float]:
 
     return x_center, y_center
 
-
 def find_coordinates(icons: list, target_icon: str) -> tuple:
     """在解析内容中查找指定的图标坐标"""
     try:
@@ -139,5 +178,10 @@ def find_coordinates(icons: list, target_icon: str) -> tuple:
     except (ValueError, IndexError, KeyError) as e:
         raise ValueError(f"无效的图标索引: {target_icon}") from e
 
+if __name__ == "__main__":
+    client = APIClient()
+    # 测试smart_locate
+    result = client.smart_locate('core\\api\\test.png')
+    print("需要点击的坐标:", result)
 
-
+    pyautogui.click(result)

@@ -632,6 +632,7 @@ class FloatingWindow(QMainWindow):
                     print(proposal)
                     proposal = "指令" + instruction + "的解析结果是" + str(proposal)
                     action = self._parse_and_log_instruction(proposal, pre_actions, curr_objs)
+                    print("最终执行动作：", action)
 
                     # 执行动作
                     utils.update_status(self.input_box, "正在执行操作...")

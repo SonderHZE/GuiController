@@ -33,7 +33,7 @@ class PyAutoGUIWrapper:
         pyautogui.press('enter')
 
     def click(self, x: Optional[int] = None, y: Optional[int] = None,
-              button: str = 'left', clicks: int = 1, interval: float = 0.2) -> None:
+              button: str = 'left', clicks: int = 1, interval: float = 0.05) -> None:
         """
         模拟鼠标点击操作
 
@@ -49,6 +49,7 @@ class PyAutoGUIWrapper:
         print(f"执行点击操作, x={x}, y={y}, 按钮={button}, 点击次数={clicks}")
         self._move_to_position(x, y)
         pyautogui.click(button=button, clicks=clicks, interval=interval)
+        pyautogui.press('enter')
 
     def open(self, x: Optional[int] = None, y: Optional[int] = None,
                      button: str = 'left', interval: float = 0.0) -> None:
@@ -123,8 +124,13 @@ class PyAutoGUIWrapper:
     def _clear_input(self, x: int, y: int, interval: float) -> None:
         """清空输入框"""
         pyautogui.click(x, y)
-        pyautogui.hotkey('ctrl', 'a', interval=interval)
-        pyautogui.press('delete')
+        # 重复按下右键键以选择所有文本
+        for _ in range(100):
+            pyautogui.press('right', interval=0) 
+
+        # 重复多次按下退格键以清空输入框
+        for _ in range(100):
+            pyautogui.press('backspace', interval=0)
 
     def _safe_paste(self, text: str, interval: float) -> None:
         """安全粘贴文本"""
@@ -194,4 +200,4 @@ class PyAutoGUIWrapper:
 if __name__ == '__main__':
     controller = PyAutoGUIWrapper()
 
-    print(controller.get_all_windows_titles())
+    controller.input('123', 100, 100)
