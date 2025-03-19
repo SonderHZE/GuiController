@@ -676,11 +676,7 @@ class FloatingWindow(QMainWindow):
                 
                 layout.addLayout(btn_box)
                 
-                if confirm_dialog.exec_() == QDialog.Accepted:
-                    utils.update_status(self.input_box, "工作流执行完成")
-
-                else:
-                    utils.update_status(self.input_box, "工作流执行已取消")
+                confirm_dialog.exec_()
             except Exception as e:
                 print(e)
                 utils.update_status(self.input_box, f"工作流生成失败: {str(e)}")
@@ -792,7 +788,7 @@ class FloatingWindow(QMainWindow):
 
                     # 工作流模式执行
                     utils.update_status(self.input_box, f"正在执行工作流步骤{step_idx}...")
-                    utils.execute_action(self.controller, step, None, True)
+                    result = utils.execute_action(self.controller, step, None, True)
 
                     # 比较hwnd_titles
                     new_hwnd_titles = utils.get_all_windows_titles()
@@ -826,6 +822,7 @@ class FloatingWindow(QMainWindow):
             print("工作流执行完成")
             utils.update_status(self.input_box, "✅ 工作流执行完成")
         except Exception as e:
+            print(e)
             utils.update_status(self.input_box, f"❌ 工作流执行失败: {str(e)}")
 
     def _handle_failed_step(self, instruction, pre_actions, failed_step, step_number):
@@ -836,33 +833,35 @@ class FloatingWindow(QMainWindow):
             self.mode_combo.setCurrentIndex(0)  # 切换到单步模式
             
             # 使用常规流程执行步骤
-            utils.update_status(self.input_box, f"AI介入{step_number}...")
+            utils.update_status(self.input_box, f"AI介入{failed_step}")
+            print("AI介入：", failed_step)
             # 截图、处理图像、解析数据
-            self._take_and_log_screenshot(config.PRE_DESKTOP_PATH)
-            self._wait_for_screenshot_delay()
-            self._take_and_log_screenshot()
-            result = self._process_and_log_image()
-            self._save_labeled_image(result)
-            objs = self._parse_and_log_data(result)
-            curr_objs = self._extract_curr_objs(objs)
-            
-            analasis = self._parse_and_log_instruction(instruction+"尝试执行失败的操作为："+failed_step, pre_actions, curr_objs, type='omni')
-            print("分析者输出：", analasis)
-            action = self._parse_and_log_instruction(instruction+"尝试执行失败的操作为："+failed_step, pre_actions, curr_objs, analysis=analasis)
-            # 执行动作
-            utils.update_status(self.input_box, "正在执行操作...")
-            if action is None:
-                return False
-            action_data = utils.robust_json_extract(action)
-            action_result = utils.execute_action(self.controller, action_data, objs)
-            if action_result is None:
-                # 完全失败时尝试完整处理流程
-                return self._retry_with_omni(failed_step, step_number)
-            action_type, target_icon, params, execute_duration, status, action_data = action_result
-            print("执行对象：", action_data)
-            utils.log_operation(action_type, target_icon, params, execute_duration, status)
-            if status == "success":
-                return True
+            while True:
+                self._take_and_log_screenshot(config.PRE_DESKTOP_PATH)
+                self._wait_for_screenshot_delay()
+                self._take_and_log_screenshot()
+                result = self._process_and_log_image()
+                self._save_labeled_image(result)
+                objs = self._parse_and_log_data(result)
+                curr_objs = self._extract_curr_objs(objs)
+                
+                instruction = failed_step["target"]
+                analasis = self._parse_and_log_instruction(instruction, [], curr_objs, type='omni')
+                print("分析者输出：", analasis)
+                action = self._parse_and_log_instruction(instruction, [], curr_objs, analysis=analasis)
+                # 执行动作
+                utils.update_status(self.input_box, "正在执行操作...")
+                if action is None:
+                    return False
+                action_data = utils.robust_json_extract(action)
+                action_result = utils.execute_action(self.controller, action_data, objs)
+                if action_result is None:
+                    return True
+                action_type, target_icon, params, execute_duration, status, action_data = action_result
+                print("执行对象：", action_data)
+                utils.log_operation(action_type, target_icon, params, execute_duration, status)
+                if status == "success":
+                    return True
         finally:
             self.mode_combo.setCurrentIndex(original_mode)
 
@@ -903,7 +902,7 @@ class FloatingWindow(QMainWindow):
                     config.CURRENT_DESKTOP_PATH
                 )
                 
-                if similarity["ssim"] < 0.98 and similarity["mse"] > 1000:
+                if similarity["ssim"] < 0.98 and similarity["mse"] > 100:
                     print("桌面状态发生变化")
                     if os.path.exists(config.PRE_DESKTOP_PATH):
                         os.remove(config.PRE_DESKTOP_PATH)

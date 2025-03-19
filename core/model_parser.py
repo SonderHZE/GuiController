@@ -243,18 +243,18 @@ class WorkFlowGenerator:
          请你按照json的格式输出, e.g. 查看本系统python当前版本", 用于完成任务的步骤可能如下:
             ‘‘‘json
             [
-                {"action": "hotkey", "id": -1, "target": "系统级快捷键", "params": {"key_sequence": ["win", "r"]}}
-                {"action": "click", "id": 4, "target": "确定", "params": {"button_type": "left", "clicks": 1}}
-                {"action": "input", "id": 2, "target": "输入框", "params": {"text_content": "python --version"}
+                {"action": "hotkey", "target": "系统级快捷键", "params": {"key_sequence": ["win", "r"]}}
+                {"action": "click", "target": "确定", "params": {"button_type": "left", "clicks": 1}}
+                {"action": "input","target": "输入框", "params": {"text_content": "python --version"}
             ]
             ‘‘‘
             另一个示例, 用户指令为“查看华南理工大学计算机学院的计科培养计划”，可能的操作步骤如下:
             ‘‘‘json
             [
-                {"action": "open", "id": 21, "target": "Microsoft Edge图标", "params": {}
-                {"action": "input", "id": 1, "target": "搜索框", "params": {"text_content": "华南理工大学计算机学院 计科培养计划"}
-                {"action": "click", "id": 8, "target": "硕士培养方案-华南理工大学", "params": {"button_type": "left", "clicks": 1, "x": 393.0000042915344, "y": 412.0000022649765}}
-                {"action": "click", "id": 6, "target": "计算机科学与技术[学术型硕士]--培养方案基本信息", "params": {"button_type": "left", "clicks": 1, "x": 922.0000076293945, "y": 700.0000011920929}}
+                {"action": "open", "target": "Microsoft Edge图标", "params": {}
+                {"action": "input", "target": "搜索框", "params": {"text_content": "华南理工大学计算机学院 计科培养计划"}
+                {"action": "click", "target": "硕士培养方案-华南理工大学", "params": {"button_type": "left", "clicks": 1}}
+                {"action": "click", "target": "计算机科学与技术[学术型硕士]--培养方案基本信息", "params": {"button_type": "left", "clicks": 1}}
             ]
             ‘‘‘
         - open操作包括：定位图标→双击打开软件（打开软件最佳选择）
@@ -275,7 +275,9 @@ class WorkFlowGenerator:
                 "clicks": 1 // 点击次数，默认为1次，可根据需要调整
                 }
                 }
-        你需要确保分解后的动作能够准确无误地完成用户的任务，如果一定需要target但是没有可选的内容，用“NoFit”替代。
+        你需要确保分解后的动作能够准确无误地完成用户的任务，如果一定需要target但是没有可选的内容，用你所期望完整的操作内容来代替，这个操作内容可能包含多个子任务，你可以将其纳入进去，并且模仿用户指令的格式例如：
+            {"action": "click", "target": "通过微信搜索框找到微信联系人“姐姐”", "params": {"button_type": "left", "clicks": 1}}
+
         hotkey、press_enter、finish都不需要target，可以直接使用。
         """
 
