@@ -5,6 +5,9 @@ from typing import Optional, Any
 
 import win32gui
 import win32con
+from typing import Iterable, List
+import contextlib
+
 
 class PyAutoGUIWrapper:
     def __init__(self, pause: float = 0.5) -> None:
@@ -49,7 +52,6 @@ class PyAutoGUIWrapper:
         print(f"执行点击操作, x={x}, y={y}, 按钮={button}, 点击次数={clicks}")
         self._move_to_position(x, y)
         pyautogui.click(button=button, clicks=clicks, interval=interval)
-        pyautogui.press('enter')
 
     def open(self, x: Optional[int] = None, y: Optional[int] = None,
                      button: str = 'left', interval: float = 0.0) -> None:
@@ -101,13 +103,58 @@ class PyAutoGUIWrapper:
 
     def hot_key(self, *keys: str, interval: float = 0.1) -> None:
         """
-        模拟快捷键操作
-
+        执行系统级快捷键操作
+        
         Args:
-            *keys: 组合键（如 'ctrl', 'c'）
-            interval: 按键间隔时间（秒）
+            *keys: 组合键序列（例如 'ctrl', 'shift', 'esc'）
+            interval: 组合键之间的间隔时间（秒）
+            
+        Raises:
+            ValueError: 无有效组合键输入
+            WindowFocusError: 窗口焦点设置失败
+            HotkeyExecutionError: 快捷键执行失败
         """
-        pyautogui.hotkey(*keys, interval=interval)
+        self._activate_target_window()
+        self._validate_hotkeys(keys)
+        
+        normalized_keys = self._normalize_keys(keys)
+        print(f"准备执行组合键: {keys} (间隔: {interval}s)")
+        try:
+            # 修正：确保上下文管理器正确使用
+            with self._hotkey_error_handler():
+                pyautogui.hotkey(*normalized_keys, interval=interval)
+        except pyautogui.FailSafeException as e:
+            raise RuntimeError(f"安全模式触发: {str(e)}") from e
+
+    def _activate_target_window(self) -> None:
+        """激活目标窗口"""
+        if self._current_hwnd:
+            try:
+                self.set_foreground_window(self._current_hwnd)
+            except WindowsError as e:
+                raise RuntimeError(f"窗口激活失败: {str(e)}") from e
+
+    @staticmethod
+    def _validate_hotkeys(keys: tuple) -> None:
+        """验证组合键有效性"""
+        if not keys:
+            raise ValueError("必须提供至少一个组合键")
+        if any(not isinstance(k, str) for k in keys):
+            raise TypeError("组合键必须为字符串类型")
+
+    @staticmethod
+    def _normalize_keys(keys: Iterable[str]) -> List[str]:
+        """规范化按键格式"""
+        return [k.strip().lower() for k in keys]
+
+    @contextlib.contextmanager
+    def _hotkey_error_handler(self):
+        """快捷键执行的异常处理上下文"""
+        try:
+            yield
+        except pyautogui.PyAutoGUIException as e:
+            print(f"快捷键执行失败: {str(e)}")
+            raise RuntimeError("快捷键执行失败") from e
 
     def _move_to_position(self, x: Optional[int], y: Optional[int]) -> None:
         """移动鼠标到指定位置"""
@@ -124,13 +171,9 @@ class PyAutoGUIWrapper:
     def _clear_input(self, x: int, y: int, interval: float) -> None:
         """清空输入框"""
         pyautogui.click(x, y)
-        # 重复按下右键键以选择所有文本
-        for _ in range(100):
-            pyautogui.press('right', interval=0) 
-
-        # 重复多次按下退格键以清空输入框
-        for _ in range(100):
-            pyautogui.press('backspace', interval=0)
+        pyautogui.hotkey('ctrl', 'a', interval=interval)
+        pyautogui.press('backspace')
+    
 
     def _safe_paste(self, text: str, interval: float) -> None:
         """安全粘贴文本"""
@@ -197,7 +240,15 @@ class PyAutoGUIWrapper:
         win32gui.EnumWindows(_get_windows, None)
         return self._windows
 
-if __name__ == '__main__':
-    controller = PyAutoGUIWrapper()
 
-    controller.input('123', 100, 100)
+    def get_active_window_title(self) -> str:
+        """获取当前活动窗口的标题"""
+        return win32gui.GetWindowText(win32gui.GetForegroundWindow())
+
+
+    def find_icons(self, image_path: str, threshold: float = 0.9) -> tuple:
+        """在屏幕上查找指定图标"""
+        location = pyautogui.locateCenterOnScreen(image_path, confidence=threshold)
+        if location:
+            return location.x, location.y
+        return ()

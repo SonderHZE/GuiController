@@ -6,7 +6,7 @@ def main():
     # 初始化API客户端
     client = APIClient()
     
-    # 初始化屏幕控制器null
+    # 初始化屏幕控制器
     screen_ctrl = PyAutoGUIWrapper(pause=1.0)
     main_window.FloatingWindow(screen_ctrl).show()
 

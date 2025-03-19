@@ -4,6 +4,7 @@ import logging
 import os
 import sys
 import time
+import re
 from typing import Optional
 import shutil 
 from PyQt5.QtCore import Qt, QPoint
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
     QWidget,
     QMessageBox
 )
+from pydantic import Json
 
 import config
 from core import screen_controller
@@ -38,6 +40,7 @@ import utils
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPen
 from PyQt5.QtWidgets import QGridLayout
+import json
 
 class HistoryComboBox(QComboBox):
     """带历史记录功能的下拉框组件"""
@@ -180,6 +183,12 @@ class FloatingWindow(QMainWindow):
         layout.setContentsMargins(15, 10, 15, 10)
         layout.setSpacing(10)
 
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("🛠️ 单步执行")
+        self.mode_combo.addItem("🔧 工作流生成")
+        self.mode_combo.setCurrentIndex(0)
+        self._setup_mode_combo_style()
+
         # 输入组件
         self.input_box = QLineEdit()
         self.input_box.setPlaceholderText("🖋️ 输入指令...")
@@ -203,11 +212,33 @@ class FloatingWindow(QMainWindow):
         self.stop_btn.clicked.connect(self.on_stop_clicked)
 
         # 布局管理
+        layout.addWidget(self.mode_combo) 
         layout.addWidget(self.input_box)
         layout.addWidget(self.history_combo)
         layout.addWidget(self.submit_btn)
         layout.addWidget(self.detail_btn)
         layout.addWidget(self.stop_btn)
+
+    def _setup_mode_combo_style(self) -> None:
+        """设置模式选择框样式"""
+        self.mode_combo.setStyleSheet("""
+            QComboBox {
+                border: 2px solid #e0e0e0;
+                border-radius: 10px;
+                padding: 8px 12px;
+                font-size: 14px;
+                background: white;
+                min-width: 120px;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border-left: 1px solid #e0e0e0;
+            }
+            QComboBox:hover { border-color: #bdbdbd; }
+            QComboBox:focus { border-color: #2196F3; }
+        """)
 
     def _setup_input_style(self) -> None:
         self.input_box.setStyleSheet("""
@@ -511,7 +542,22 @@ class FloatingWindow(QMainWindow):
                     break
                 
                 print(f"执行动作: {action}")
+                hwnd_titles = utils.get_all_windows_titles()
+
                 utils.execute_action(self.controller, action, None)
+
+                # 比较hwnd_titles
+                new_hwnd_titles = utils.get_all_windows_titles()
+                # 获得新打开的窗口标题
+                new_windows = set(new_hwnd_titles) - set(hwnd_titles)
+                if new_windows:
+                    # 获取第一个新窗口的句柄
+                    new_window_title = next(iter(new_windows))
+                    try:
+                        hwnd = self.controller.find_window_by_title(new_window_title)
+                        self.controller.maximize_window(hwnd)
+                    except Exception as e:
+                        logging.error(f"窗口最大化失败: {str(e)}")
                 print(f"动作执行完成")
 
                 # 延迟两秒
@@ -536,9 +582,9 @@ class FloatingWindow(QMainWindow):
     def _extract_curr_objs(self, objs):
         return [{"id": obj["id"], "type": obj["type"], "content": obj["content"]} for obj in objs]
 
-    def _parse_and_log_instruction(self, instruction, pre_actions, curr_objs, type='text'):
+    def _parse_and_log_instruction(self, instruction, pre_actions, curr_objs, analysis="", type='text'):
         utils.update_status(self.input_box, "正在解析指令...")
-        action, _ = utils.parse_instruction(instruction, pre_actions, curr_objs, type)
+        action, _ = utils.parse_instruction(instruction, pre_actions, curr_objs, analysis, type)
         utils.log_operation("解析指令", "screen", {}, 0, "success")
         return action
 
@@ -559,13 +605,15 @@ class FloatingWindow(QMainWindow):
                 time.sleep(2)
 
     def _parse_and_log_data(self, result):
-            objs, _ = utils.parse_data(result.parsed_content)  # 修改字典访问为属性访问
+            objs, _ = utils.parse_data(result.parsed_content) 
             utils.log_operation("解析数据", "screen", {}, 0, "success")
             return objs
 
     def process_input(self):
         """处理用户输入（支持预存操作执行）"""
         # 获取输入内容或选中历史操作
+        is_workflow_mode = self.mode_combo.currentIndex() == 1
+
         instruction = self.history_combo.currentText()
 
         # 尝试解析预存操作数据
@@ -593,6 +641,50 @@ class FloatingWindow(QMainWindow):
         self.keep_running()
         start_time = time.time()
         pre_actions = []
+
+        if is_workflow_mode:
+            try:
+                # 调用大模型生成工作流
+                utils.update_status(self.input_box, "正在生成工作流...")
+                workflow,_ = utils.generate_workflow(instruction)
+                utils.update_status(self.input_box, f"工作流生成完成，耗时 {time.time() - start_time:.2f} 秒")
+                
+                # 弹出确认对话框
+                confirm_dialog = QDialog(self)
+                confirm_dialog.setWindowTitle("工作流确认")
+                confirm_dialog.setFixedSize(400, 300)
+                
+                layout = QVBoxLayout(confirm_dialog)
+                layout.addWidget(QLabel(f"生成 {len(workflow)} 个步骤："))
+                print("生成工作流：", workflow)
+                
+                # 显示工作流步骤
+                list_widget = QListWidget()
+                for step, action in enumerate(workflow, 1):
+                    list_widget.addItem(f"步骤 {step}: {action}")
+                layout.addWidget(list_widget)
+                
+                # 确认按钮
+                btn_box = QHBoxLayout()
+                btn_confirm = QPushButton("执行工作流")
+                btn_cancel = QPushButton("取消")
+                btn_box.addWidget(btn_confirm)
+                btn_box.addWidget(btn_cancel)
+                
+                btn_confirm.clicked.connect(lambda: self._execute_workflow(workflow, confirm_dialog, instruction))
+                btn_cancel.clicked.connect(confirm_dialog.reject)
+                
+                layout.addLayout(btn_box)
+                
+                if confirm_dialog.exec_() == QDialog.Accepted:
+                    utils.update_status(self.input_box, "工作流执行完成")
+
+                else:
+                    utils.update_status(self.input_box, "工作流执行已取消")
+            except Exception as e:
+                print(e)
+                utils.update_status(self.input_box, f"工作流生成失败: {str(e)}")
+            return
 
         try:
             if not instruction:
@@ -628,24 +720,22 @@ class FloatingWindow(QMainWindow):
                     curr_objs = self._extract_curr_objs(objs)
 
                     # 指令解析
-                    proposal = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, type='omni')
-                    print(proposal)
-                    proposal = "指令" + instruction + "的解析结果是" + str(proposal)
-                    action = self._parse_and_log_instruction(proposal, pre_actions, curr_objs)
-                    print("最终执行动作：", action)
+                    analysis = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, type='omni')
+                    print("分析者输出：", analysis)
+                    action = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, analysis=analysis) 
 
                     # 执行动作
                     utils.update_status(self.input_box, "正在执行操作...")
                     if action is None:
                         continue
                     action_data = utils.robust_json_extract(action)
-                    print(action_data)
                     action_result = utils.execute_action(self.controller, action_data, objs)
                     if action_result is None:
                         break
-                    action_type, target_icon, params, execute_duration, status = action_result
+                    action_type, target_icon, params, execute_duration, status, action_data = action_result
+                    print("执行对象：", action_data)
                     utils.log_operation(action_type, target_icon, params, execute_duration, status)
-                    if status == "success" and self.check_desktop_stabilized():
+                    if status == "success" and self.check_desktop_stabilized(action_type):
                         pre_actions.append(action_data)
 
                         # 比较hwnd_titles
@@ -687,10 +777,117 @@ class FloatingWindow(QMainWindow):
 
             self.finish_running()
 
-    def check_desktop_stabilized(self):
+    def _execute_workflow(self, workflow, dialog, instruction):
+        """执行生成的工作流（带失败降级处理）"""
+        dialog.accept()
+        try:
+
+            pre_actions = []
+            for step_idx, step in enumerate(workflow, 1):
+                if self.stop_requested:
+                    break
+                
+                try:
+                    hwnd_titles = utils.get_all_windows_titles()
+
+                    # 工作流模式执行
+                    utils.update_status(self.input_box, f"正在执行工作流步骤{step_idx}...")
+                    utils.execute_action(self.controller, step, None, True)
+
+                    # 比较hwnd_titles
+                    new_hwnd_titles = utils.get_all_windows_titles()
+                    # 获得新打开的窗口标题
+                    new_windows = set(new_hwnd_titles) - set(hwnd_titles)
+                    if new_windows:
+                        # 获取第一个新窗口的句柄
+                        new_window_title = next(iter(new_windows))
+                        try:
+                            hwnd = self.controller.find_window_by_title(new_window_title)
+                            self.controller.maximize_window(hwnd)
+                        except Exception as e:
+                            logging.error(f"窗口最大化失败: {str(e)}")
+
+                    if self.check_desktop_stabilized(step["action"]):
+                        pre_actions.append(step)
+
+                    pre_actions.append(step)
+                    time.sleep(1)  # 步骤间间隔
+
+
+                except Exception as e:
+                    logging.error(f"工作流步骤{step_idx}执行失败，启动降级处理: {str(e)}")
+                    # 失败时切换为单步执行模式
+                    success = self._handle_failed_step(instruction, pre_actions, step, step_idx)
+                    if not success:
+                        raise RuntimeError(f"步骤{step_idx}降级执行失败") from e
+                
+                time.sleep(1)  # 步骤间间隔
+            
+            print("工作流执行完成")
+            utils.update_status(self.input_box, "✅ 工作流执行完成")
+        except Exception as e:
+            utils.update_status(self.input_box, f"❌ 工作流执行失败: {str(e)}")
+
+    def _handle_failed_step(self, instruction, pre_actions, failed_step, step_number):
+        """处理失败的工作流步骤"""
+        try:
+            # 保存原始模式并切换为单步模式
+            original_mode = self.mode_combo.currentIndex()
+            self.mode_combo.setCurrentIndex(0)  # 切换到单步模式
+            
+            # 使用常规流程执行步骤
+            utils.update_status(self.input_box, f"AI介入{step_number}...")
+            # 截图、处理图像、解析数据
+            self._take_and_log_screenshot(config.PRE_DESKTOP_PATH)
+            self._wait_for_screenshot_delay()
+            self._take_and_log_screenshot()
+            result = self._process_and_log_image()
+            self._save_labeled_image(result)
+            objs = self._parse_and_log_data(result)
+            curr_objs = self._extract_curr_objs(objs)
+            
+            analasis = self._parse_and_log_instruction(instruction+"尝试执行失败的操作为："+failed_step, pre_actions, curr_objs, type='omni')
+            print("分析者输出：", analasis)
+            action = self._parse_and_log_instruction(instruction+"尝试执行失败的操作为："+failed_step, pre_actions, curr_objs, analysis=analasis)
+            # 执行动作
+            utils.update_status(self.input_box, "正在执行操作...")
+            if action is None:
+                return False
+            action_data = utils.robust_json_extract(action)
+            action_result = utils.execute_action(self.controller, action_data, objs)
+            if action_result is None:
+                # 完全失败时尝试完整处理流程
+                return self._retry_with_omni(failed_step, step_number)
+            action_type, target_icon, params, execute_duration, status, action_data = action_result
+            print("执行对象：", action_data)
+            utils.log_operation(action_type, target_icon, params, execute_duration, status)
+            if status == "success":
+                return True
+        finally:
+            self.mode_combo.setCurrentIndex(original_mode)
+
+    def _retry_with_omni(self, step, step_number):
+        """使用完整流程重试步骤"""
+        try:
+            # 构造模拟指令
+            fake_instruction = json.dumps(step, ensure_ascii=False)
+            self.input_box.setText(fake_instruction)
+            
+            # 执行完整处理流程
+            self.process_input()
+            return not self.stop_requested
+        except Exception as e:
+            logging.error(f"步骤{step_number}完整流程重试失败: {str(e)}")
+            return False
+
+    def check_desktop_stabilized(self, action_type):
         """检查桌面状态是否发生变化
         返回True表示发生了变化，False表示没有变化
         """
+        if action_type not in ["click", "open","scroll"]:
+            # 不进行桌面状态检查的操作
+            return True
+
         try:
             if not os.path.exists(config.PRE_DESKTOP_PATH):
                 logging.warning("缺少历史桌面截图")
@@ -706,7 +903,7 @@ class FloatingWindow(QMainWindow):
                     config.CURRENT_DESKTOP_PATH
                 )
                 
-                if similarity["ssim"] < 0.95 and similarity["mse"] > 3000:
+                if similarity["ssim"] < 0.98 and similarity["mse"] > 1000:
                     print("桌面状态发生变化")
                     if os.path.exists(config.PRE_DESKTOP_PATH):
                         os.remove(config.PRE_DESKTOP_PATH)
