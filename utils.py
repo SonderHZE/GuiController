@@ -235,14 +235,17 @@ def execute_action(controller, action_data, objs, ifWorkFlw=False):
     
     try:
         # 获取坐标参数
-        x, y = _get_action_coordinates(
-            action_type=action_type,
-            target_icon=target_icon,
-            params=params,
-            objs=objs,
-            executor=executor,
-            ifWorkFlw=ifWorkFlw
-        )
+        if params.get('x') and params.get('y'):
+            x, y = params['x'], params['y']
+        else:
+            x, y = _get_action_coordinates(
+                action_type=action_type,
+                target_icon=target_icon,
+                params=params,
+                objs=objs,
+                executor=executor,
+                ifWorkFlw=ifWorkFlw
+            )
         
         # 更新最终参数
         if x and y:
@@ -404,3 +407,45 @@ def maximize_window(title, controller):
         controller.maximize_window()
     except Exception as e:
         logging.error(f"最大化窗口失败: {str(e)}")
+
+def _execute_core_action(executor, action_type, params, final_action, log_prefix):
+    """执行核心操作逻辑"""
+    from core.api import client
+    
+    action_handlers = {
+        'click': lambda: executor.click(
+            params.get('x'), params.get('y'),
+            params.get('button_type', 'left'),
+            params.get('clicks', 1)
+        ),
+        'open': lambda: executor.open(params.get('x'), params.get('y')),
+        'input': lambda: executor.input(
+            params['text_content'],
+            params.get('x'), params.get('y')
+        ),
+        'scroll': lambda: executor.scroll(params['direction']),
+        'hotkey': lambda: executor.hot_key(*params['key_sequence']),
+        'press_enter': lambda: executor.press_enter(),
+        'finish': lambda: None,
+        'delay': lambda: time.sleep(params.get('seconds', 1)),  # 添加延迟操作
+        'move': lambda: executor.move_to(params.get('x'), params.get('y'))  # 添加鼠标移动操作
+    }
+
+    if action_type not in action_handlers:
+        raise ValueError(f"未知动作类型: {action_type}")
+
+    start_time = time.time()
+    try:
+        logging.info(f"{log_prefix} 开始执行 {action_type}")
+        action_handlers[action_type]()
+
+        if action_type == 'finish':
+            return None
+
+        duration = time.time() - start_time
+        logging.info(f"{log_prefix} {action_type} 执行成功，耗时: {duration:.2f}s")
+        return action_type, final_action.get('target'), params, duration, "success", final_action
+
+    except Exception as e:
+        logging.error(f"{log_prefix} 操作执行失败: {str(e)}")
+        raise 

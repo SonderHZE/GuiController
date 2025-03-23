@@ -5,42 +5,24 @@ import os
 import sys
 import time
 import re
-from typing import Optional
-import shutil 
+import shutil
+from typing import Optional, List, Dict, Any
+
 from PyQt5.QtCore import Qt, QPoint
-from PyQt5 import QtCore
-from PyQt5.QtGui import QPixmap, QPainter, QColor, QMouseEvent
+import PyQt5.QtCore as QtCore
+from PyQt5.QtGui import QPixmap, QPainter, QColor, QMouseEvent, QPen
 from PyQt5.QtWidgets import (
-    QApplication,
-    QComboBox,
-    QDialog,
-    QDoubleSpinBox,
-    QFormLayout,
-    QGraphicsDropShadowEffect,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QMainWindow,
-    QPushButton,
-    QSizePolicy,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
-    QMessageBox
+    QApplication, QComboBox, QDialog, QDoubleSpinBox, QFormLayout,
+    QGraphicsDropShadowEffect, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QMainWindow, QPushButton, QSizePolicy,
+    QSpinBox, QVBoxLayout, QWidget, QMessageBox, QGridLayout
 )
-from pydantic import Json
 
 import config
 from core import screen_controller
-from core.screen_snipate import ScreenRecorder
+from core.recorder import ActionRecorder
 from core.api.client import APIClient
 import utils
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPen
-from PyQt5.QtWidgets import QGridLayout
-import json
 
 class HistoryComboBox(QComboBox):
     """带历史记录功能的下拉框组件"""
@@ -87,7 +69,7 @@ class HistoryComboBox(QComboBox):
 class ControlButton(QPushButton):
     """统一风格的控制按钮"""
     
-    def __init__(self, text: str, color: str, parent: Optional[QWidget] = None):
+    def __init__(self, text, color="#4CAF50", parent=None):
         super().__init__(text, parent)
         self._base_color = color
         self._setup_style()
@@ -120,28 +102,38 @@ class ControlButton(QPushButton):
         return f"hsl({self._base_color.lstrip('#')}, 80%, 35%)" if '#' in self._base_color else self._base_color
 
 class FloatingWindow(QMainWindow):
+    """主悬浮窗口"""
+    
     def __init__(self, controller: screen_controller.PyAutoGUIWrapper):
         app = QApplication(sys.argv)
         super().__init__()
         self.controller = controller
         self.api_client = APIClient()
+        self.recorder = ActionRecorder()
+        
+        # 初始化属性
         self._init_properties()
+        
+        # 设置窗口和UI
         self._setup_window()
         self._setup_ui()
+        
         self.show()
         sys.exit(app.exec_())
 
+    # ===== 初始化和设置方法 =====
+    
     def _init_properties(self) -> None:
         """初始化窗口属性"""
         self.stop_requested = False
         self.dragging = False
         self.old_pos = QPoint()
+        self._pending_click_timer = None
 
     def _setup_window(self) -> None:
         """窗口基本设置"""
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint 
-        )
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        
         # 获取屏幕尺寸
         desktop = QApplication.desktop()
         if desktop is not None:
@@ -149,23 +141,22 @@ class FloatingWindow(QMainWindow):
         else:
             logging.error("QApplication.desktop() 返回 None，无法获取屏幕可用区域。")
             screen_geo = None
+            
         window_width = 580
         window_height = 70
 
         # 置顶
-        self.setWindowFlags(
-            self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
-        )
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
 
-        # 计算居中底部位置（预留50像素给任务栏）
+        # 计算居中底部位置
         if screen_geo is not None:
-            x = (screen_geo.width() - window_width) // 2  # 添加空值检查
+            x = (screen_geo.width() - window_width) // 2
             y = screen_geo.height() - window_height
             self.setGeometry(x, y, window_width, window_height)
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             self.setWindowOpacity(0.98)  # 轻微透明效果
             self.setStyleSheet("background-color: rgba(255, 255, 255, 0.7); border-radius: 14px;")
-        
+    
     def _add_shadow_effect(self) -> None:
         """添加阴影效果"""
         shadow = QGraphicsDropShadowEffect(self)
@@ -183,9 +174,22 @@ class FloatingWindow(QMainWindow):
         layout.setContentsMargins(15, 10, 15, 10)
         layout.setSpacing(10)
 
+        # 创建UI组件
+        self._create_ui_components()
+        
+        # 布局管理
+        self._arrange_ui_components(layout)
+        
+        # 根据模式更新UI
+        self.mode_combo.currentIndexChanged.connect(self._update_ui_by_mode)
+
+    def _create_ui_components(self) -> None:
+        """创建UI组件"""
+        # 模式选择框
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("🛠️ 单步执行")
         self.mode_combo.addItem("🔧 工作流生成")
+        self.mode_combo.addItem("📹 操作录制") 
         self.mode_combo.setCurrentIndex(0)
         self._setup_mode_combo_style()
 
@@ -206,18 +210,34 @@ class FloatingWindow(QMainWindow):
         self.detail_btn.setToolTip("查看操作历史详情")
         self.stop_btn.setToolTip("停止当前操作（Esc）")
 
+        # 录制按钮
+        self.record_btn = ControlButton("录制", "#4CAF50")
+        self.stop_record_btn = ControlButton("停止录制", "#f44336")
+        self.record_btn.setToolTip("开始录制操作")
+        self.stop_record_btn.setToolTip("停止录制操作")
+        self.stop_record_btn.setVisible(False)  # 初始隐藏停止按钮
+
         # 信号连接
+        self._connect_signals()
+
+    def _connect_signals(self) -> None:
+        """连接信号和槽"""
         self.submit_btn.clicked.connect(self.process_input)
         self.detail_btn.clicked.connect(self.on_detail_clicked)
         self.stop_btn.clicked.connect(self.on_stop_clicked)
+        self.record_btn.clicked.connect(self.on_record_clicked)
+        self.stop_record_btn.clicked.connect(self.on_stop_record_clicked)
 
-        # 布局管理
+    def _arrange_ui_components(self, layout: QHBoxLayout) -> None:
+        """布局UI组件"""
         layout.addWidget(self.mode_combo) 
         layout.addWidget(self.input_box)
         layout.addWidget(self.history_combo)
         layout.addWidget(self.submit_btn)
         layout.addWidget(self.detail_btn)
         layout.addWidget(self.stop_btn)
+        layout.addWidget(self.record_btn)
+        layout.addWidget(self.stop_record_btn)
 
     def _setup_mode_combo_style(self) -> None:
         """设置模式选择框样式"""
@@ -241,6 +261,7 @@ class FloatingWindow(QMainWindow):
         """)
 
     def _setup_input_style(self) -> None:
+        """设置输入框样式"""
         self.input_box.setStyleSheet("""
             QLineEdit {
                 border: 2px solid #e0e0e0;
@@ -256,25 +277,46 @@ class FloatingWindow(QMainWindow):
             QLineEdit:hover { border-color: #bdbdbd; }
         """)
 
-    def on_stop_clicked(self):
-        """停止按钮点击事件处理"""
-        self.stop_requested = True
-        utils.update_status(self.input_box, "操作已停止")
-        logging.info("用户请求停止当前操作")
+    # ===== UI更新方法 =====
+    
+    def _update_ui_by_mode(self, index: int) -> None:
+        """根据当前模式更新UI显示"""
+        # 录制模式
+        if index == 2:  # 录制模式
+            self.input_box.setPlaceholderText("输入录制名称...")
+            self.record_btn.setVisible(True)
+            self.submit_btn.setVisible(False)
+            self.detail_btn.setVisible(False)
+            self.stop_btn.setVisible(False)
+        else:  # 其他模式
+            self.input_box.setPlaceholderText("🖋️ 输入指令...")
+            self.record_btn.setVisible(False)
+            self.stop_record_btn.setVisible(False)
+            self.submit_btn.setVisible(True)
+            self.detail_btn.setVisible(True)
+            self.stop_btn.setVisible(True)
 
-    def keep_running(self):
+    def keep_running(self) -> None:
         """开始执行时状态"""
         self.input_box.clear()
         self.stop_requested = False  # 重置停止标志
         utils.update_status(self.input_box, "正在执行...")
 
-    def finish_running(self):
+    def finish_running(self) -> None:
         """完成执行时状态"""
         self.input_box.clear()
         utils.update_status(self.input_box, "输入指令...")
         self.stop_requested = False
 
-    def on_detail_clicked(self):
+    # ===== 事件处理方法 =====
+    
+    def on_stop_clicked(self) -> None:
+        """停止按钮点击事件处理"""
+        self.stop_requested = True
+        utils.update_status(self.input_box, "操作已停止")
+        logging.info("用户请求停止当前操作")
+
+    def on_detail_clicked(self) -> None:
         """详情按钮点击事件处理"""
         try:
             history_data = utils.load_action_history(config.PRE_ACTIONS_PATH + f"/{self.history_combo.currentText()}")
@@ -282,8 +324,66 @@ class FloatingWindow(QMainWindow):
         except Exception as e:
             logging.error(f"加载历史操作失败: {str(e)}")
             utils.update_status(self.input_box, f"加载失败: {str(e)}")
+    
+    def on_record_clicked(self) -> None:
+        """开始录制按钮点击事件"""
+        recording_name = self.input_box.text().strip()
+        if not recording_name:
+            utils.update_status(self.input_box, "请输入录制名称")
+            return
+            
+        # 开始录制
+        if self.recorder.start_recording():
+            utils.update_status(self.input_box, f"正在录制: {recording_name}")
+            self.record_btn.setVisible(False)
+            self.stop_record_btn.setVisible(True)
+            logging.info(f"开始录制: {recording_name}")
+        else:
+            utils.update_status(self.input_box, "录制启动失败")
+    
+    def on_stop_record_clicked(self) -> None:
+        """停止录制按钮点击事件"""
+        recording_name = self.input_box.text().strip()
+        
+        # 停止录制
+        if self.recorder.stop_recording():
+            # 保存录制结果
+            if self.recorder.save_recording(recording_name):
+                utils.update_status(self.input_box, f"录制已保存: {recording_name}")
+                logging.info(f"录制已保存: {recording_name}")
+                
+                # 刷新历史记录
+                self.history_combo.load_history()
+            else:
+                utils.update_status(self.input_box, "录制保存失败")
+                
+            self.record_btn.setVisible(True)
+            self.stop_record_btn.setVisible(False)
+        else:
+            utils.update_status(self.input_box, "录制停止失败")
 
-    def _create_backup(self):
+    def mousePressEvent(self, event: Optional[QMouseEvent]) -> None:
+        """鼠标按下事件处理"""
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.dragging = True
+            self.old_pos = event.globalPos()
+            event.accept()
+
+    def mouseMoveEvent(self, event: Optional[QMouseEvent]) -> None:
+        """处理窗口拖动事件"""
+        if event and self.dragging:
+            # 计算位置偏移量时转换为相对坐标
+            delta = event.globalPos() - self.old_pos
+            new_pos = self.pos() + delta
+            self.move(new_pos)
+            self.old_pos = event.globalPos()
+
+    def mouseReleaseEvent(self, a0):
+        self.dragging = False
+
+    # ===== 文件和数据处理方法 =====
+
+    def _create_backup(self) -> None:
         """创建带时间戳的备份文件"""
         try:
             backup_dir = os.path.join(config.PRE_ACTIONS_PATH, "backups")
@@ -293,7 +393,7 @@ class FloatingWindow(QMainWindow):
                 os.path.join(backup_dir, f"{time.strftime('%Y%m%d%H%M%S')}.bak")
             )
         except Exception as e:
-            logging.error(f"创建备份失败: {str(e)}")
+            logging.error(f"创建备份文件失败: {str(e)}")
 
     def show_detail_dialog(self, data):
         """显示简洁版操作详情对话框"""
@@ -613,6 +713,11 @@ class FloatingWindow(QMainWindow):
         """处理用户输入（支持预存操作执行）"""
         # 获取输入内容或选中历史操作
         is_workflow_mode = self.mode_combo.currentIndex() == 1
+        is_record_mode = self.mode_combo.currentIndex() == 2
+
+        # 录制模式下不处理输入
+        if is_record_mode:
+            return
 
         instruction = self.history_combo.currentText()
 
@@ -922,30 +1027,6 @@ class FloatingWindow(QMainWindow):
             logging.error(f"稳定性检查异常: {str(e)}")
             return False
 
-    def mousePressEvent(self, a0):
-        event = a0
-        if event is not None and event.button() == Qt.MouseButton.LeftButton:
-            self.dragging = True
-            self.old_pos = event.globalPos()
-            event.accept()
-            self.dragging = True
-            self.old_pos = event.globalPos()
-            event.accept()
-
-    def mouseMoveEvent(self, a0: Optional[QMouseEvent]):
-            """处理窗口拖动事件"""
-            event = a0
-            if event and self.dragging:
-                # 计算位置偏移量时转换为相对坐标
-                delta = event.globalPos() - self.old_pos
-                new_pos = self.pos() + delta
-                self.move(new_pos)
-                self.old_pos = event.globalPos()
-                event.accept()
-
-    def mouseReleaseEvent(self, a0):
-        self.dragging = False
-
 class OperationTrailWindow(QDialog):
     def __init__(self, actions, parent=None):
         super().__init__(parent)
@@ -975,61 +1056,112 @@ class OperationTrailWindow(QDialog):
         main_layout.addLayout(control_panel)
         main_layout.addWidget(self.canvas)
         
-        # 信号连接
+        # 连接信号
         self.zoom_in_btn.clicked.connect(self.zoom_in)
         self.zoom_out_btn.clicked.connect(self.zoom_out)
         self.reset_btn.clicked.connect(self.reset_view)
         
+        # 初始绘制
         self.draw_trail()
-
+        
+    def zoom_in(self):
+        """放大视图"""
+        self.scale_factor *= 1.2
+        self.draw_trail()
+        
+    def zoom_out(self):
+        """缩小视图"""
+        self.scale_factor *= 0.8
+        self.draw_trail()
+        
+    def reset_view(self):
+        """重置视图"""
+        self.scale_factor = 1.0
+        self.draw_trail()
+        
     def draw_trail(self):
         """绘制操作轨迹"""
-        pixmap = QPixmap(self.canvas.size())
-        pixmap.fill(QColor(Qt.GlobalColor.white)) 
+        # 创建空白画布
+        canvas_width, canvas_height = 1180, 740
+        pixmap = QPixmap(canvas_width, canvas_height)
+        pixmap.fill(Qt.white)
+        
+        # 创建绘图对象
         painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
         
-        # 设置绘制参数
-        point_radius = 5
-        line_width = 2
-        color_map = {
-            'click': Qt.GlobalColor.red,
-            'input': Qt.GlobalColor.blue,
-            'open': Qt.GlobalColor.green,
-            'scroll': Qt.GlobalColor.magenta
-        }
+        # 计算坐标范围
+        x_coords = [a.get('params', {}).get('x', 0) for a in self.actions if 'params' in a and 'x' in a.get('params', {})]
+        y_coords = [a.get('params', {}).get('y', 0) for a in self.actions if 'params' in a and 'y' in a.get('params', {})]
         
-        prev_point = None
-        for action in self.actions:
-            if action.get('coord'):
-                # 坐标转换
-                x = action['coord']['x'] * self.scale_factor
-                y = action['coord']['y'] * self.scale_factor
+        if not x_coords or not y_coords:
+            painter.drawText(pixmap.rect(), Qt.AlignCenter, "没有有效的坐标数据")
+            painter.end()
+            self.canvas.setPixmap(pixmap)
+            return
+            
+        # 计算边界和缩放
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        
+        # 添加边距
+        margin = 50
+        width = max(max_x - min_x, 100)
+        height = max(max_y - min_y, 100)
+        
+        # 计算缩放比例
+        scale_x = (canvas_width - 2 * margin) / width * self.scale_factor
+        scale_y = (canvas_height - 2 * margin) / height * self.scale_factor
+        scale = min(scale_x, scale_y)
+        
+        # 计算中心点
+        center_x = (min_x + max_x) / 2
+        center_y = (min_y + max_y) / 2
+        
+        # 绘制坐标轴
+        painter.setPen(QPen(QColor(200, 200, 200), 1))
+        painter.drawLine(margin, canvas_height//2, canvas_width-margin, canvas_height//2)
+        painter.drawLine(canvas_width//2, margin, canvas_width//2, canvas_height-margin)
+        
+        # 绘制轨迹线
+        last_x, last_y = None, None
+        for i, action in enumerate(self.actions):
+            params = action.get('params', {})
+            if 'x' in params and 'y' in params:
+                # 转换坐标
+                x = canvas_width/2 + (params['x'] - center_x) * scale
+                y = canvas_height/2 + (params['y'] - center_y) * scale
                 
-                # 绘制操作点
-                color = color_map.get(action['action'], Qt.GlobalColor.gray)
-                painter.setBrush(color)
-                painter.drawEllipse(QtCore.QPoint(x, y), point_radius, point_radius)
+                # 绘制点
+                action_type = action.get('action', '')
+                if action_type == 'click':
+                    painter.setPen(QPen(QColor(255, 0, 0), 3))
+                    painter.drawEllipse(x-5, y-5, 10, 10)
+                elif action_type == 'open':
+                    painter.setPen(QPen(QColor(0, 128, 0), 3))
+                    painter.drawEllipse(x-7, y-7, 14, 14)
+                else:
+                    painter.setPen(QPen(QColor(0, 0, 255), 3))
+                    painter.drawEllipse(x-3, y-3, 6, 6)
                 
-                # 绘制连接线
-                if prev_point is not None:
-
-                    # 设置画笔
-                    painter.setPen(QPen(color, line_width))
-                    painter.drawLine(prev_point, QtCore.QPoint(x, y))
+                # 绘制连线
+                if last_x is not None and last_y is not None:
+                    painter.setPen(QPen(QColor(100, 100, 100), 1, Qt.DashLine))
+                    painter.drawLine(last_x, last_y, x, y)
                 
-                prev_point = QtCore.QPoint(x, y)
+                # 绘制序号
+                painter.setPen(QColor(50, 50, 50))
+                painter.drawText(x+10, y-10, str(i+1))
+                
+                last_x, last_y = x, y
         
         painter.end()
         self.canvas.setPixmap(pixmap)
 
-    def zoom_in(self):
-        self.scale_factor *= 1.2
-        self.draw_trail()
+def main():
+    """主函数"""
+    controller = screen_controller.PyAutoGUIWrapper()
+    FloatingWindow(controller)
 
-    def zoom_out(self):
-        self.scale_factor *= 0.8
-        self.draw_trail()
-
-    def reset_view(self):
-        self.scale_factor = 1.0
-        self.draw_trail()
+if __name__ == "__main__":
+    main()

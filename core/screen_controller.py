@@ -20,6 +20,11 @@ class PyAutoGUIWrapper:
         self._set_pause(pause)
         self._current_hwnd = None 
 
+    def move_to(self, x, y):
+        """移动鼠标到指定位置"""
+        pyautogui.moveTo(x, y)
+        return True
+
     def _set_pause(self, pause: float) -> None:
         """设置操作间隔时间"""
         pyautogui.PAUSE = max(0.1, pause)  # 确保最小间隔0.1秒
