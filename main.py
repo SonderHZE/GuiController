@@ -3,7 +3,6 @@ from core.screen_controller import PyAutoGUIWrapper
 from ui import main_window
 
 def main():
-    # 初始化API客户端
     client = APIClient()
     
     # 初始化屏幕控制器

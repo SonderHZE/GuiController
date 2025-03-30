@@ -622,7 +622,25 @@ class FloatingWindow(QMainWindow):
                 json.dump(data, f, indent=2, ensure_ascii=False)
             utils.update_status(self.input_box, "✅ 修改已保存")
         except Exception as e:
-            utils.update_status(self.input_box, f"❌ 保存失败: {str(e)}")    
+            utils.update_status(self.input_box, f"❌ 保存失败: {str(e)}")   
+
+    def _save_execution_time(self, instruction, total_time, is_workflow=False):
+        """保存指令执行时间记录"""
+        try:
+            mode = "workflow" if is_workflow else "single_step"
+            record = {
+                "instruction": instruction,
+                "time": round(total_time, 2),
+                "mode": mode,
+            }
+            
+            # 以jsonl格式保存到当前目录
+            with open("execution_times.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                
+            logging.info(f"已记录执行时间: {instruction} - {round(total_time, 2)}秒")
+        except Exception as e:
+            logging.error(f"保存执行时间记录失败: {str(e)}")
 
     def show_trail(self, data):
         """显示轨迹窗口"""
@@ -720,6 +738,7 @@ class FloatingWindow(QMainWindow):
             return
 
         instruction = self.history_combo.currentText()
+        start_time = time.time()  # 记录开始时间
 
         # 尝试解析预存操作数据
         if instruction and instruction != "" and instruction != "无":
@@ -733,8 +752,11 @@ class FloatingWindow(QMainWindow):
                 self._execute_pre_actions(history_data)
                 print(history_data)
 
-                utils.update_status(self.input_box, f"预存操作 {instruction} 执行完成")
-                logging.info(f"预存操作 {instruction} 执行完成")
+                utils.update_status(self.input_box, f"预存操作 {instruction} 执行完成，耗时: {total_time:.2f}秒")
+                logging.info(f"预存操作 {instruction} 执行完成，耗时: {total_time:.2f}秒")
+
+                # 记录执行时间
+                self._save_execution_time(instruction, total_time)
                 return
 
             except Exception as e:
@@ -776,7 +798,8 @@ class FloatingWindow(QMainWindow):
                 btn_box.addWidget(btn_confirm)
                 btn_box.addWidget(btn_cancel)
                 
-                btn_confirm.clicked.connect(lambda: self._execute_workflow(workflow, confirm_dialog, instruction))
+                # 传递指令和开始时间给执行函数
+                btn_confirm.clicked.connect(lambda: self._execute_workflow(workflow, confirm_dialog, instruction, start_time))
                 btn_cancel.clicked.connect(confirm_dialog.reject)
                 
                 layout.addLayout(btn_box)
@@ -821,15 +844,19 @@ class FloatingWindow(QMainWindow):
                     curr_objs = self._extract_curr_objs(objs)
 
                     # 指令解析
+                    utils.update_status(self.input_box, "分析者正在分析...")
                     analysis = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, type='omni')
                     print("分析者输出：", analysis)
+                    utils.update_status(self.input_box, "总结者正在总结...")
                     action = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, analysis=analysis) 
+                    print("总结者输出：", action)
 
                     # 执行动作
                     utils.update_status(self.input_box, "正在执行操作...")
                     if action is None:
                         continue
                     action_data = utils.robust_json_extract(action)
+                    print()
                     action_result = utils.execute_action(self.controller, action_data, objs)
                     if action_result is None:
                         break
@@ -875,14 +902,20 @@ class FloatingWindow(QMainWindow):
             total_duration = time.time() - start_time
             status_message = "操作已停止" if self.stop_requested else f"操作完成，总耗时: {total_duration:.2f}秒"
             utils.update_status(self.input_box, status_message)
+            
+            # 记录执行时间
+            if not self.stop_requested:
+                self._save_execution_time(instruction, total_duration)
 
             self.finish_running()
 
-    def _execute_workflow(self, workflow, dialog, instruction):
+    def _execute_workflow(self, workflow, dialog, instruction, start_time=None):
         """执行生成的工作流（带失败降级处理）"""
         dialog.accept()
+        if start_time is None:
+            start_time = time.time()  # 如果没有传入开始时间，则记录当前时间
+            
         try:
-
             pre_actions = []
             for step_idx, step in enumerate(workflow, 1):
                 if self.stop_requested:
@@ -924,11 +957,19 @@ class FloatingWindow(QMainWindow):
                 
                 time.sleep(1)  # 步骤间间隔
             
-            print("工作流执行完成")
-            utils.update_status(self.input_box, "✅ 工作流执行完成")
+            total_time = time.time() - start_time
+            print("工作流执行完成，耗时:", total_time)
+            utils.update_status(self.input_box, f"✅ 工作流执行完成，耗时: {total_time:.2f}秒")
+            
+            # 记录工作流执行时间
+            self._save_execution_time(instruction, total_time, is_workflow=True)
+            
         except Exception as e:
             print(e)
-            utils.update_status(self.input_box, f"❌ 工作流执行失败: {str(e)}")
+            total_time = time.time() - start_time
+            utils.update_status(self.input_box, f"❌ 工作流执行失败: {str(e)}，耗时: {total_time:.2f}秒")
+            
+            self._save_execution_time(instruction, total_time, is_workflow=True)
 
     def _handle_failed_step(self, instruction, pre_actions, failed_step, step_number):
         """处理失败的工作流步骤"""
@@ -942,6 +983,8 @@ class FloatingWindow(QMainWindow):
             print("AI介入：", failed_step)
             # 截图、处理图像、解析数据
             while True:
+                hwnd_titles = utils.get_all_windows_titles()
+
                 self._take_and_log_screenshot(config.PRE_DESKTOP_PATH)
                 self._wait_for_screenshot_delay()
                 self._take_and_log_screenshot()
@@ -950,7 +993,7 @@ class FloatingWindow(QMainWindow):
                 objs = self._parse_and_log_data(result)
                 curr_objs = self._extract_curr_objs(objs)
                 
-                instruction = failed_step["target"]
+                instruction = failed_step
                 analasis = self._parse_and_log_instruction(instruction, [], curr_objs, type='omni')
                 print("分析者输出：", analasis)
                 action = self._parse_and_log_instruction(instruction, [], curr_objs, analysis=analasis)
@@ -965,8 +1008,24 @@ class FloatingWindow(QMainWindow):
                 action_type, target_icon, params, execute_duration, status, action_data = action_result
                 print("执行对象：", action_data)
                 utils.log_operation(action_type, target_icon, params, execute_duration, status)
-                if status == "success":
-                    return True
+                if status == "success" and self.check_desktop_stabilized(action_type):
+                        pre_actions.append(action_data)
+
+                        # 比较hwnd_titles
+                        new_hwnd_titles = utils.get_all_windows_titles()
+                        # 获得新打开的窗口标题
+                        new_windows = set(new_hwnd_titles) - set(hwnd_titles)
+                        if new_windows:
+                            # 获取第一个新窗口的句柄
+                            new_window_title = next(iter(new_windows))
+                            try:
+                                hwnd = self.controller.find_window_by_title(new_window_title)
+                                self.controller.maximize_window(hwnd)
+                            except Exception as e:
+                                logging.error(f"窗口最大化失败: {str(e)}")
+                else:
+                    # 当前执行并没有改变状态，需要重新执行
+                    continue
         finally:
             self.mode_combo.setCurrentIndex(original_mode)
 

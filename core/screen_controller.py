@@ -116,17 +116,25 @@ class PyAutoGUIWrapper:
             
         Raises:
             ValueError: 无有效组合键输入
-            WindowFocusError: 窗口焦点设置失败
-            HotkeyExecutionError: 快捷键执行失败
+            TypeError: 组合键类型错误
+            RuntimeError: 快捷键执行失败
         """
-        self._activate_target_window()
+        try:
+            # 尝试激活目标窗口，但即使失败也继续执行
+            self._activate_target_window()
+        except Exception as e:
+            print(f"窗口激活失败，但将继续执行热键: {str(e)}")
+        
         self._validate_hotkeys(keys)
         
         normalized_keys = self._normalize_keys(keys)
-        print(f"准备执行组合键: {keys} (间隔: {interval}s)")
+        print(f"准备执行组合键: {normalized_keys} (间隔: {interval}s)")
         try:
-            # 修正：确保上下文管理器正确使用
             with self._hotkey_error_handler():
+                # 对于特殊的全局热键，不需要窗口焦点
+                if keys[0].lower() in ['win', 'alt'] or len(keys) > 1 and keys[0].lower() in ['ctrl', 'shift'] and keys[1].lower() in ['alt', 'win']:
+                    print("执行全局热键，不需要窗口焦点")
+                
                 pyautogui.hotkey(*normalized_keys, interval=interval)
         except pyautogui.FailSafeException as e:
             raise RuntimeError(f"安全模式触发: {str(e)}") from e
@@ -135,9 +143,15 @@ class PyAutoGUIWrapper:
         """激活目标窗口"""
         if self._current_hwnd:
             try:
+                # 检查窗口句柄是否有效
+                if not win32gui.IsWindow(self._current_hwnd):
+                    print(f"警告: 窗口句柄 {self._current_hwnd} 已失效，尝试重新获取活动窗口")
+                    self._current_hwnd = win32gui.GetForegroundWindow()
+                
                 self.set_foreground_window(self._current_hwnd)
             except WindowsError as e:
-                raise RuntimeError(f"窗口激活失败: {str(e)}") from e
+                print(f"窗口激活失败: {str(e)}")
+                pass
 
     @staticmethod
     def _validate_hotkeys(keys: tuple) -> None:
@@ -206,9 +220,24 @@ class PyAutoGUIWrapper:
         """将指定窗口置于前台"""
         target_hwnd = hwnd or self._current_hwnd
         if not target_hwnd:
-            raise ValueError("需要指定窗口句柄")
-        win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
-        win32gui.SetForegroundWindow(target_hwnd)
+            print("警告: 未指定窗口句柄，使用当前活动窗口")
+            target_hwnd = win32gui.GetForegroundWindow()
+            self._current_hwnd = target_hwnd
+            
+        # 验证窗口句柄是否有效
+        if not win32gui.IsWindow(target_hwnd):
+            print(f"警告: 窗口句柄 {target_hwnd} 无效，使用当前活动窗口")
+            target_hwnd = win32gui.GetForegroundWindow()
+            self._current_hwnd = target_hwnd
+            
+        try:
+            # 尝试恢复窗口（如果最小化）
+            win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
+            # 尝试将窗口置于前台
+            win32gui.SetForegroundWindow(target_hwnd)
+        except Exception as e:
+            print(f"设置前台窗口失败: {str(e)}")
+            # 不抛出异常，允许操作继续
 
     def get_window_rect(self, hwnd: Optional[int] = None) -> tuple:
         """获取窗口坐标和尺寸 (left, top, right, bottom)"""
