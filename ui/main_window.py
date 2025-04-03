@@ -698,7 +698,7 @@ class FloatingWindow(QMainWindow):
         utils.log_operation("截图", "屏幕", {}, screenshot_duration, "success")
 
     def _extract_curr_objs(self, objs):
-        return [{"id": obj["id"], "type": obj["type"], "content": obj["content"]} for obj in objs]
+        return [{"id": obj["id"], "content": obj["content"]} for obj in objs if obj["content"] != "No object detected."]
 
     def _parse_and_log_instruction(self, instruction, pre_actions, curr_objs, analysis="", type='text'):
         utils.update_status(self.input_box, "正在解析指令...")
@@ -856,7 +856,6 @@ class FloatingWindow(QMainWindow):
                     if action is None:
                         continue
                     action_data = utils.robust_json_extract(action)
-                    print()
                     action_result = utils.execute_action(self.controller, action_data, objs)
                     if action_result is None:
                         break
@@ -981,6 +980,7 @@ class FloatingWindow(QMainWindow):
             # 使用常规流程执行步骤
             utils.update_status(self.input_box, f"AI介入{failed_step}")
             print("AI介入：", failed_step)
+            pre_actions = []
             # 截图、处理图像、解析数据
             while True:
                 hwnd_titles = utils.get_all_windows_titles()
@@ -994,9 +994,9 @@ class FloatingWindow(QMainWindow):
                 curr_objs = self._extract_curr_objs(objs)
                 
                 instruction = failed_step
-                analasis = self._parse_and_log_instruction(instruction, [], curr_objs, type='omni')
+                analasis = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, type='omni')
                 print("分析者输出：", analasis)
-                action = self._parse_and_log_instruction(instruction, [], curr_objs, analysis=analasis)
+                action = self._parse_and_log_instruction(instruction, pre_actions, curr_objs, analysis=analasis)
                 # 执行动作
                 utils.update_status(self.input_box, "正在执行操作...")
                 if action is None:

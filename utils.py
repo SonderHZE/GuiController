@@ -143,31 +143,49 @@ def parse_data(result):
     """解析数据"""
     start_time = time.time()
     objs = []
-    lines = result.strip().split('\n')
-    for line in lines:
+    
+    # 处理空结果
+    if not result or not result.strip():
+        logging.warning("解析数据: 接收到空结果")
+        return [], time.time() - start_time
+    
+    # 使用正则表达式提取所有花括号内容
+    import re
+    pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+    matches = re.findall(pattern, result)
+    
+    for match in matches:
         try:
-            # 提取花括号中的内容
-            dict_str = line[line.index('{'):line.rindex('}') + 1]
-            # 解析字符串为字典
-            icon_data = ast.literal_eval(dict_str)
-            objs.append(icon_data)
+            try:
+                icon_data = json.loads(match)
+            except json.JSONDecodeError:
+                icon_data = ast.literal_eval(match)
+                
+            # 验证必要字段
+            if all(key in icon_data for key in ["type", "content", "bbox"]):
+                objs.append(icon_data)
+            else:
+                logging.warning(f"解析数据: 缺少必要字段 - {match[:50]}...")
+                
         except Exception as e:
-            print(f"解析错误: {e}")
+            logging.error(f"解析错误: {str(e)[:100]} - 数据: {match[:50]}...")
             continue
 
-    ret = []
-    count = 0
-    for obj in objs:
-        if obj["content"] != "No object detected.":
-            ret.append({
-                "id": count,
-                "type": obj["type"],
-                "content": obj["content"],
-                "bbox": obj["bbox"],
-            })
-            count += 1
+    # 使用列表推导式
+    ret = [
+        {
+            "id": idx,
+            "type": obj["type"],
+            "content": obj["content"],
+            "bbox": obj["bbox"],
+        }
+        for idx, obj in enumerate(objs)
+    ]
 
+    # 记录解析结果统计
     duration = time.time() - start_time
+    logging.info(f"解析数据: 成功解析 {len(ret)} 个对象，耗时 {duration:.2f}s")
+    
     return ret, duration
 
 def parse_instruction(instruction, pre_actions, current_icons, analysis = "", type = "text"):
